@@ -1,0 +1,95 @@
+name: CI — Lint, Test & Evaluate
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  lint:
+    name: Lint (Ruff)
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'testing' || 'development' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'testing' || 'development' }}
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+
+  evaluate-golden-set:
+    name: Golden Set Validation (dry-run)
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'testing' || 'development' }}
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Validate golden set structure
+        run: python -m evaluation.run_eval --dry-run
+
+  evaluate-llm:
+    name: Golden Set Evaluation (LLM)
+    runs-on: ubuntu-latest
+    environment: production
+    needs: [test, evaluate-golden-set]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run full evaluation
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python -m evaluation.run_eval
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-report
+          path: evaluation_report.json
+          retention-days: 30
+
+  docker-build:
+    name: Docker Build Check
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'testing' || 'development' }}
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t anymotor:ci .

@@ -4,5 +4,6 @@ __pycache__/
 .streamlit/secrets.toml
 seen_listings.json
 data/checkpoints.sqlite
+data/monitoring.sqlite
 .pytest_cache/
 contracts/*.pdf
