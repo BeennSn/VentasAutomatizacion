@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from shared.event_bus import PUBLISHED
 from shared.graph_state import CarSaleState
-from tools.listing_publisher import build_mock_urls
+from tools.listing_publisher import publish_to_telegram
 
 SYSTEM_PROMPT = """Eres el Agente de Publicación de un sistema de venta de autos usados. Tu rol es:
 1. Generar descripciones atractivas y verídicas para anuncios de autos usados
@@ -68,7 +68,18 @@ class PublicationAgent:
                 "events": [PUBLISHED],
             }
 
-        urls = build_mock_urls(state.car_id)
+        telegram_result = publish_to_telegram(
+            titulo=result.titulo_anuncio,
+            descripcion=result.descripcion_facebook,
+            precio=result.precio_publicar,
+            image_url=state.car_data.get("image_url") or None,
+            car_id=state.car_id,
+        )
+        if telegram_result.get("ok"):
+            from shared.listings_store import save_listing
+
+            save_listing(state.car_id, state.car_data)
+        urls = [telegram_result["url"]] if telegram_result.get("url") else []
         publication_data = {
             "descripcion_generada": {
                 "facebook": result.descripcion_facebook,
@@ -79,7 +90,8 @@ class PublicationAgent:
             "precio_publicar": result.precio_publicar,
             "tags_seo": result.tags_seo,
             "urls_publicadas": urls,
-            "plataformas": ["facebook_marketplace", "mercadolibre", "instagram"],
+            "plataformas": ["telegram"],
+            "telegram_publish": telegram_result,
         }
 
         return {

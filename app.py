@@ -11,27 +11,12 @@ import streamlit as st
 from dotenv import load_dotenv, set_key
 
 from agents.orchestrator import Orchestrator
+from shared.graph_state import CarSaleState
 from tools.airtable_tool import AirtableTool
 from tools.scraper_tool import FacebookScraper, extract_phone_number
 from tools.seen_listings import clear_seen, count_seen, is_seen, mark_seen
-
-
-# ─── Telegram bot (one instance shared across all Streamlit sessions) ──────────
-@st.cache_resource
-def _start_telegram_bot(token: str, groq_key: str, allowed_str: str):
-    """Starts the Telegram bot in a background daemon thread, once per process."""
-    import threading
-    from agents.telegram_bot_agent import TelegramBotAgent
-
-    allowed = [u.strip() for u in allowed_str.split(",") if u.strip()]
-    bot = TelegramBotAgent(token=token, groq_key=groq_key, allowed_users=allowed)
-    t = threading.Thread(target=bot.run_forever, daemon=True)
-    t.start()
-    return bot
-
-
-from tools.telegram_tool import TelegramNotifier  # noqa: E402
-from tools.whatsapp_tool import WhatsAppTool  # noqa: E402
+from tools.telegram_tool import TelegramNotifier
+from tools.whatsapp_tool import WhatsAppTool
 
 # Resolve .env relative to this file, not the process's CWD — `streamlit run`
 # may be launched from a different working directory than this file's folder.
@@ -239,9 +224,11 @@ telegram_allowed = os.getenv("TELEGRAM_ALLOWED_USERS", telegram_chat or "")
 airtable = AirtableTool()
 whatsapp = WhatsAppTool()
 
-# Start Telegram bot agent if credentials are available
-if telegram_token and groq_key:
-    _start_telegram_bot(telegram_token, groq_key, telegram_allowed)
+# El bot de Telegram corre como proceso aparte (`python run_telegram_bot.py`),
+# no embebido en el hilo de Streamlit: el arranque automático vía
+# @st.cache_resource resultó poco confiable (el hilo no siempre llegaba a
+# consumir updates). Correrlo standalone es más simple de verificar y evita
+# tener dos procesos escuchando el mismo bot token a la vez.
 
 # ─── Header ────────────────────────────────────────────────────────────────────
 st.markdown(
@@ -315,11 +302,12 @@ with st.sidebar:
     )
 
 # ─── Tabs ──────────────────────────────────────────────────────────────────────
-tab_search, tab_manual, tab_db, tab_dash, tab_monitor, tab_cfg = st.tabs(
+tab_search, tab_manual, tab_db, tab_crm, tab_dash, tab_monitor, tab_cfg = st.tabs(
     [
         "🔍 Buscar Ofertas",
         "➕ Agregar Manual",
         "📊 Mis Oportunidades",
+        "💬 CRM y Cierre",
         "📈 Dashboard",
         "🛡️ Monitoreo",
         "⚙️ Configuración",
@@ -402,6 +390,10 @@ with tab_search:
                         else "✅ **¡Buena oferta!** — Precio por debajo del mercado"
                     )
                     st.success(label)
+                    st.caption(
+                        "📢 Anuncio de reventa generado — corresponde a tu decisión de "
+                        "compra. Reparación y entrega se coordinan por separado."
+                    )
                 else:
                     st.error(
                         "❌ **No es rentable** — El precio es demasiado alto para revender con ganancia."
@@ -654,6 +646,10 @@ with tab_manual:
 
                 if is_apto2:
                     st.success("✅ **¡Buena oferta!**")
+                    st.caption(
+                        "📢 Anuncio de reventa generado — corresponde a tu decisión de "
+                        "compra. Reparación y entrega se coordinan por separado."
+                    )
                     if gan2:
                         st.markdown(
                             f'<span class="profit-pill">💰 +${gan2:,.0f} de ganancia ({pct2:.0f}%)</span>',
@@ -961,6 +957,192 @@ with tab_db:
                                 )
 
                 st.markdown('<hr class="am-sep">', unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — CRM Y CIERRE (demo interactiva de CRMChatbotAgent + SalesClosingAgent)
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_crm:
+    st.subheader("💬 Probar CRM y Cierre de venta")
+    st.caption(
+        "Simulá una conversación con un comprador interesado y negociá el cierre. "
+        "Usa CRMChatbotAgent y SalesClosingAgent reales, con el LLM en vivo."
+    )
+
+    if "crm_state" not in st.session_state:
+        st.session_state.crm_state = None
+    if "crm_messages" not in st.session_state:
+        st.session_state.crm_messages = []
+
+    with st.expander(
+        "1️⃣ Configurar el auto de prueba", expanded=st.session_state.crm_state is None
+    ):
+        cc1, cc2, cc3 = st.columns(3)
+        crm_marca = cc1.text_input("Marca", value="Toyota", key="crm_marca")
+        crm_modelo = cc2.text_input("Modelo", value="Corolla", key="crm_modelo")
+        crm_anio = cc3.number_input(
+            "Año", min_value=1990, max_value=2026, value=2019, key="crm_anio"
+        )
+        cc4, cc5 = st.columns(2)
+        crm_km = cc4.number_input(
+            "Kilometraje", min_value=0, value=45000, step=1000, key="crm_km"
+        )
+        crm_pm = cc5.number_input(
+            "Precio de mercado estimado ($)",
+            min_value=0,
+            value=14000,
+            step=500,
+            key="crm_pm",
+        )
+
+        if st.button("🚗 Iniciar auto de prueba", disabled=not groq_key):
+            st.session_state.crm_state = CarSaleState(
+                car_data={
+                    "marca": crm_marca,
+                    "modelo": crm_modelo,
+                    "año": int(crm_anio),
+                    "km": int(crm_km),
+                    "precio_mercado": float(crm_pm),
+                    "precio_venta": float(crm_pm) * 0.9,
+                },
+            )
+            st.session_state.crm_messages = []
+            st.session_state.pop("crm_closing_result", None)
+            st.session_state.pop("crm_oferta_aceptada", None)
+            st.rerun()
+
+    if st.session_state.crm_state is not None:
+        crm_car_state = st.session_state.crm_state
+        cd = crm_car_state.car_data
+        st.info(
+            f"Auto activo: **{cd.get('marca')} {cd.get('modelo')} {cd.get('año')}** — "
+            f"{cd.get('km'):,} km — precio mercado ${cd.get('precio_mercado'):,.0f} "
+            f"(car_id: `{crm_car_state.car_id[:8]}...`)"
+        )
+
+        st.markdown("#### 2️⃣ Conversación con el cliente (CRMChatbotAgent)")
+        for m in st.session_state.crm_messages:
+            with st.chat_message(m["role"]):
+                st.write(m["content"])
+
+        cliente_msg = st.chat_input("Escribí como si fueras el comprador interesado...")
+        if cliente_msg:
+            st.session_state.crm_messages.append({"role": "user", "content": cliente_msg})
+            orch_crm = Orchestrator(api_key=groq_key, model=groq_model)
+            with st.spinner("El CRM está respondiendo..."):
+                crm_result = _run_async(
+                    orch_crm.run_crm(message=cliente_msg, state=crm_car_state)
+                )
+            st.session_state.crm_messages.append(
+                {"role": "assistant", "content": crm_result.get("respuesta_cliente", "")}
+            )
+            if crm_result.get("lead_calificado"):
+                st.toast("✅ Lead calificado — listo para negociar el cierre")
+            st.rerun()
+
+        if crm_car_state.lead_data.get("lead_calificado"):
+            st.success("✅ Lead calificado — podés pasar a negociar el cierre.")
+        elif crm_car_state.lead_data.get("consultas"):
+            st.warning(
+                f"Lead aún no calificado. Motivo: "
+                f"{crm_car_state.lead_data.get('motivo_descarte', '—')}"
+            )
+
+        st.divider()
+        st.markdown("#### 3️⃣ Cierre de venta (SalesClosingAgent)")
+        oferta = st.number_input(
+            "Oferta del cliente ($)",
+            min_value=0.0,
+            value=float(cd.get("precio_mercado", 0)) * 0.85,
+            step=100.0,
+            key="crm_oferta",
+        )
+        if st.button("🤝 Negociar oferta", disabled=not groq_key):
+            orch_close = Orchestrator(api_key=groq_key, model=groq_model)
+            with st.spinner("Negociando..."):
+                st.session_state["crm_closing_result"] = _run_async(
+                    orch_close.run_closing(offer=oferta, state=crm_car_state)
+                )
+                st.session_state["crm_oferta_aceptada"] = oferta
+
+        closing = st.session_state.get("crm_closing_result")
+        if closing:
+            if closing.get("requiere_datos_cierre"):
+                st.info(f"✅ {closing.get('mensaje_cliente', '')}")
+                dc1, dc2 = st.columns(2)
+                nombre_c = dc1.text_input("Nombre completo", key="crm_comprador_nombre")
+                dni_c = dc2.text_input(
+                    "DNI (8 dígitos)", key="crm_comprador_dni", max_chars=8
+                )
+                correo_c = st.text_input(
+                    "Correo electrónico",
+                    placeholder="ej. cliente@correo.com",
+                    key="crm_comprador_correo",
+                )
+                fecha_cita = st.text_input(
+                    "Fecha deseada para la cita",
+                    placeholder="ej. jueves 18 de julio, 4pm",
+                    key="crm_fecha_cita",
+                )
+                datos_ok = bool(
+                    nombre_c and dni_c.isdigit() and len(dni_c) == 8
+                    and "@" in correo_c and fecha_cita
+                )
+                if st.button(
+                    "📅 Confirmar datos y cerrar venta",
+                    disabled=not groq_key or not datos_ok,
+                ):
+                    orch_close2 = Orchestrator(api_key=groq_key, model=groq_model)
+                    with st.spinner("Cerrando venta..."):
+                        st.session_state["crm_closing_result"] = _run_async(
+                            orch_close2.run_closing(
+                                offer=st.session_state["crm_oferta_aceptada"],
+                                state=crm_car_state,
+                                fecha_cita=fecha_cita,
+                                datos_comprador={
+                                    "nombre": nombre_c,
+                                    "dni": dni_c,
+                                    "correo": correo_c,
+                                },
+                            )
+                        )
+                    st.rerun()
+            elif closing.get("venta_completada"):
+                st.success(f"🎉 ¡Venta cerrada en ${closing['precio_final']:,.0f}!")
+                st.write(closing.get("mensaje_cliente", ""))
+                fecha_cita = crm_car_state.sale_data.get("fecha_cita")
+                if fecha_cita:
+                    st.caption(f"📅 Cita coordinada: {fecha_cita}")
+                comprador_nombre = crm_car_state.sale_data.get("comprador_nombre")
+                if comprador_nombre:
+                    st.caption(
+                        f"🧑 Comprador: {comprador_nombre} — "
+                        f"DNI {crm_car_state.sale_data.get('comprador_dni', '-')} — "
+                        f"{crm_car_state.sale_data.get('comprador_correo', '-')}"
+                    )
+                pdf_path = crm_car_state.sale_data.get("contrato_pdf")
+                if pdf_path and os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as f:
+                        st.download_button(
+                            "📄 Descargar contrato PDF",
+                            f.read(),
+                            file_name=os.path.basename(pdf_path),
+                            mime="application/pdf",
+                        )
+            elif closing.get("error"):
+                st.error(closing["error"])
+            else:
+                st.warning(
+                    f"Oferta rechazada. Contraoferta sugerida: "
+                    f"${closing.get('contraoferta', 0):,.0f}"
+                )
+                st.write(closing.get("mensaje_cliente", ""))
+
+        if st.button("🔄 Reiniciar prueba"):
+            st.session_state.crm_state = None
+            st.session_state.crm_messages = []
+            st.session_state.pop("crm_closing_result", None)
+            st.session_state.pop("crm_oferta_aceptada", None)
+            st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — DASHBOARD
@@ -1454,7 +1636,7 @@ with tab_cfg:
         Recibe alertas por WhatsApp usando el servicio gratuito **CallMeBot**.
 
         **Cómo activarlo (una sola vez):**
-        1. Guarda este número en tus contactos: **+34 644 44 23 23** (CallMeBot)
+        1. Guarda este número en tus contactos: **+34 644 91 07 79** (CallMeBot)
         2. Envíale este mensaje por WhatsApp: `I allow callmebot to send me messages`
         3. Recibirás tu API key de respuesta en segundos
         """)

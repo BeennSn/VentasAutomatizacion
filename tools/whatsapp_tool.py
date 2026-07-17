@@ -8,9 +8,9 @@ import requests
 class WhatsAppTool:
     """
     Notificaciones via CallMeBot (gratis, sin Twilio).
-    Setup: guarda +34 644 44 23 23 como contacto y envíale
+    Setup: guarda +34 644 91 07 79 como contacto y envíale
     "I allow callmebot to send me messages" por WhatsApp.
-    Recibirás tu API key de respuesta.
+    Recibirás tu API key de respuesta (puede tardar hasta un par de minutos).
     """
 
     API_URL = "https://api.callmebot.com/whatsapp.php"
@@ -70,5 +70,33 @@ class WhatsAppTool:
             lines.append(f"📍 {city}")
         if url:
             lines += ["", url]
+
+        return self.send("\n".join(lines))
+
+    def send_sale_closed_alert(self, car_data: dict, sale_data: dict) -> bool:
+        titulo = (
+            f"{car_data.get('marca', '')} {car_data.get('modelo', '')} "
+            f"{car_data.get('año', '')}"
+        ).strip() or car_data.get("title", "Auto")
+        precio = sale_data.get("precio_final")
+        fecha_cita = sale_data.get("fecha_cita") or "por confirmar"
+        nombre = sale_data.get("comprador_nombre")
+        dni = sale_data.get("comprador_dni")
+        correo = sale_data.get("comprador_correo")
+
+        lines = [
+            "✅ *ANYMOTOR — Venta cerrada*",
+            "",
+            f"*{titulo}*",
+        ]
+        if precio:
+            lines.append(f"💰 Precio final: ${precio:,.0f}")
+        lines.append(f"📅 Cita: {fecha_cita}")
+        if nombre:
+            lines.append(f"🧑 Comprador: {nombre}")
+        if dni:
+            lines.append(f"🪪 DNI: {dni}")
+        if correo:
+            lines.append(f"✉️ Correo: {correo}")
 
         return self.send("\n".join(lines))

@@ -7,6 +7,43 @@ class TelegramNotifier:
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
 
+    def is_configured(self) -> bool:
+        return bool(self.bot_token and self.chat_id)
+
+    def send_sale_closed_alert(self, car_data: dict, sale_data: dict) -> bool:
+        if not self.is_configured():
+            return False
+
+        titulo = (
+            f"{car_data.get('marca', '')} {car_data.get('modelo', '')} "
+            f"{car_data.get('año', '')}"
+        ).strip() or car_data.get("title", "Auto")
+        precio = sale_data.get("precio_final")
+        fecha_cita = sale_data.get("fecha_cita") or "por confirmar"
+        nombre = sale_data.get("comprador_nombre")
+        dni = sale_data.get("comprador_dni")
+        correo = sale_data.get("comprador_correo")
+
+        message = "✅ *ANYMOTOR — Venta cerrada*\n\n"
+        message += f"*{titulo}*\n"
+        if precio:
+            message += f"💰 Precio final: ${precio:,.0f}\n"
+        message += f"📅 Cita: {fecha_cita}\n"
+        if nombre:
+            message += f"🧑 Comprador: {nombre}\n"
+        if dni:
+            message += f"🪪 DNI: {dni}\n"
+        if correo:
+            message += f"✉️ Correo: {correo}"
+
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        payload = {"chat_id": self.chat_id, "text": message, "parse_mode": "Markdown"}
+        try:
+            response = requests.post(url, json=payload, timeout=15)
+            return response.status_code == 200
+        except Exception:
+            return False
+
     def send_deal_alert(self, car_data: dict, analysis: dict) -> bool:
         if not self.bot_token or not self.chat_id:
             print("Telegram credentials not configured.")

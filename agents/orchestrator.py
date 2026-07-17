@@ -136,9 +136,17 @@ class Orchestrator:
         )
         return result
 
-    async def run_closing(self, offer: float, state: CarSaleState) -> dict[str, Any]:
+    async def run_closing(
+        self,
+        offer: float,
+        state: CarSaleState,
+        fecha_cita: str | None = None,
+        datos_comprador: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         self.console.print(f"[yellow]{self._ts()}[/yellow] Cierre: negociando")
-        result = await self.sales_closing_agent.negotiate(offer=offer, state=state)
+        result = await self.sales_closing_agent.negotiate(
+            offer=offer, state=state, fecha_cita=fecha_cita, datos_comprador=datos_comprador
+        )
         return result
 
     async def run_full_pipeline(

@@ -359,6 +359,48 @@ def extract_phone_number(text: str) -> str | None:
     return None
 
 
+# ─── Card text parsing (título/precio) ─────────────────────────────────────────
+# Facebook a veces ordena las líneas de la tarjeta como
+# "Distrito, Ciudad" / precio / título (en vez de precio / título / ubicación),
+# así que no se puede asumir que la primera línea "larga" que no es precio sea
+# el título — hay que descartar explícitamente las líneas que son solo una
+# ubicación tipo "Pueblo Libre, LM" o "Surquillo, LM".
+_LOCATION_LINE_RE = re.compile(r"^[A-ZÁÉÍÓÚÑ][\wÀ-ÿ\s]{1,40},\s*[A-Za-zÁÉÍÓÚÑáéíóúñ]{1,4}$")
+_STRICT_PRICE_RE = re.compile(r"^(?:S/\.?|\$)\s?\d[\d.,]*")
+
+
+def _parse_card_lines(text_lines: list[str]) -> tuple[str, str]:
+    """Separa precio y título de las líneas de texto de una tarjeta de
+    Marketplace, sin importar el orden en que Facebook las muestre.
+
+    Primero se identifica el precio (completo el recorrido de líneas antes
+    de buscar el título), para que una línea de precio sin símbolo de
+    moneda no se cuele como título por haberse evaluado antes de tiempo."""
+    price = ""
+    for line in text_lines:
+        if _STRICT_PRICE_RE.match(line):
+            price = line
+            break
+
+    if not price:
+        for line in text_lines:
+            if _LOCATION_LINE_RE.match(line):
+                continue
+            if re.search(r"[\$]|S/|\d{3,}", line):
+                price = line
+                break
+
+    title = ""
+    for line in text_lines:
+        if line == price or _LOCATION_LINE_RE.match(line):
+            continue
+        if len(line) > 5:
+            title = line
+            break
+
+    return title, price
+
+
 # ─── Vehicle detail extraction from free text ─────────────────────────────────
 
 
@@ -616,19 +658,13 @@ class FacebookScraper:
                     ]
 
                     # ── Extract price and title from card ─────────────────────
-                    price = ""
-                    title = ""
                     image_url = ""
 
                     img_el = el.locator("img")
                     if await img_el.count() > 0:
                         image_url = await img_el.first.get_attribute("src") or ""
 
-                    for line in text_lines:
-                        if re.search(r"[\$S/]|\d{3,}", line) and not price:
-                            price = line
-                        elif len(line) > 5 and not title and line != price:
-                            title = line
+                    title, price = _parse_card_lines(text_lines)
 
                     if not (title and price):
                         continue
